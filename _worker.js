@@ -19,7 +19,7 @@ const KV_PRX_URL = "https://raw.githubusercontent.com/backup-heavenly-demons/gat
 const DNS_SERVER_ADDRESS = "8.8.8.8";
 const DNS_SERVER_PORT = 53;
 const RELAY_SERVER_UDP = {
-  host: "udp-relay.hobihaus.space", // Kontribusi atau cek relay publik disini: https://hub.docker.com/r/kelvinzer0/udp-relay
+  host: "udp-relay.hobihaus.space",
   port: 7300,
 };
 const WS_READY_STATE_OPEN = 1;
@@ -75,7 +75,6 @@ async function getPrxList(prxBankUrl) {
     if (response.status === 200) {
       const data = await response.json();
       
-      // Normalisasi struktur data proxy
       return data.map(proxy => {
         const ip = proxy.prxIP || proxy.ip || proxy.server;
         const port = proxy.prxPort || proxy.port;
@@ -205,6 +204,72 @@ export default {
       APP_DOMAIN = url.hostname;
       serviceName = APP_DOMAIN.split(".")[0];
 
+      // ==============================
+      // SUB API HANDLER (MODIFIED)
+      // ==============================
+      if (url.pathname === '/sub') {
+        const params = url.searchParams;
+        const vpn = params.get("vpn") || "vless"; // vless, trojan, vmess
+        const format = params.get("format") || "raw"; // raw, sfa (base64)
+        const limit = parseInt(params.get("limit") || "5");
+        const domain = params.get("domain") || url.hostname; // SNI/Bug
+        const port = params.get("port") || "443";
+        const ccParam = params.get("cc") || "SG,ID,JP";
+        const countries = ccParam.toUpperCase().split(",");
+        
+        const proxies = await getPrxList(env.PRX_BANK_URL);
+        const kvPrx = await getKVPrxList();
+        
+        let configList = [];
+        
+        for (const cc of countries) {
+          // Hitung total proxy yang tersedia (KV + Bank) untuk negara ini
+          let kvCount = (kvPrx[cc] || []).length;
+          let bankMatches = proxies.filter(p => p.country === cc);
+          let totalAvailable = kvCount + bankMatches.length;
+          
+          if (totalAvailable === 0) continue;
+          
+          // Batasi jumlah config sesuai parameter 'limit' atau ketersediaan
+          const qty = Math.min(limit, totalAvailable);
+          
+          for (let i = 1; i <= qty; i++) {
+            // Construct Path: /<CC><INDEX> (contoh: /SG1)
+            // Ini akan ditangkap oleh regex /([A-Z]{2})(\d+)? di websocketHandler
+            const path = `/${cc}${i}`; 
+            const uuid = crypto.randomUUID(); 
+            const alias = `${cc} ${i} | ${vpn.toUpperCase()}`;
+            const isTLS = port === "443" ? "tls" : "none";
+            
+            if (vpn === 'vless') {
+               configList.push(`vless://${uuid}@${domain}:${port}?encryption=none&security=${isTLS}&sni=${domain}&fp=chrome&type=ws&host=${domain}&path=${path}#${encodeURIComponent(alias)}`);
+            } else if (vpn === 'trojan') {
+               configList.push(`trojan://trojan@${domain}:${port}?security=${isTLS}&sni=${domain}&fp=chrome&type=ws&host=${domain}&path=${path}#${encodeURIComponent(alias)}`);
+            } else if (vpn === 'vmess') {
+               const vmess = {
+                 v: "2", ps: alias, add: domain, port: port, id: uuid, aid: "0",
+                 scy: "auto", net: "ws", type: "none", host: domain, path: path, tls: isTLS
+               };
+               // Gunakan Buffer/btoa untuk encode base64
+               configList.push(`vmess://${btoa(JSON.stringify(vmess))}`);
+            }
+          }
+        }
+        
+        const resultText = configList.join('\n');
+        
+        // Handle Format Output: SFA/Base64
+        if (format === 'sfa' || format === 'base64') {
+          return new Response(btoa(resultText), { headers: { "Content-Type": "text/plain" } });
+        }
+        
+        // Default Raw Text
+        return new Response(resultText, { headers: { "Content-Type": "text/plain" } });
+      }
+      // ==============================
+      // END SUB API HANDLER
+      // ==============================
+
       const upgradeHeader = request.headers.get("Upgrade");
 
       // Handle prx client
@@ -219,7 +284,6 @@ export default {
           const proxies = await getPrxList(env.PRX_BANK_URL);
 
           if (proxies.length === 0) {
-            // Fallback ke KV proxy list
             const kvPrx = await getKVPrxList();
             const availableCountries = countryCodes.filter(code => kvPrx[code] && kvPrx[code].length > 0);
             if (availableCountries.length === 0) {
@@ -247,7 +311,6 @@ export default {
           const proxies = await getPrxList(env.PRX_BANK_URL);
 
           if (proxies.length === 0) {
-            // Fallback ke KV proxy list
             const kvPrx = await getKVPrxList();
             const allProxies = Object.values(kvPrx).flat();
             if (allProxies.length === 0) {
@@ -256,7 +319,6 @@ export default {
             prxIP = allProxies[Math.floor(Math.random() * allProxies.length)];
           } else {
             let selectedProxy;
-            
             if (index === null) {
               selectedProxy = proxies[Math.floor(Math.random() * proxies.length)];
             } else {
@@ -277,13 +339,10 @@ export default {
               if (proxiesByIndex.length === 0) {
                 return new Response(`No proxy at index ${index + 1} for any country`, { status: 404 });
               }
-
               selectedProxy = proxiesByIndex[Math.floor(Math.random() * proxiesByIndex.length)];
             }
-
             prxIP = `${selectedProxy.prxIP}:${selectedProxy.prxPort}`;
           }
-
           console.log(`Selected Proxy (/ALL${index !== null ? index + 1 : ""}): ${prxIP}`);
           return await websocketHandler(request);
         }
@@ -295,14 +354,11 @@ export default {
           const proxies = await getPrxList(env.PRX_BANK_URL);
 
           if (proxies.length === 0) {
-            // Fallback ke KV proxy list
             const kvPrx = await getKVPrxList();
             const countries = Object.keys(kvPrx).filter(code => kvPrx[code] && kvPrx[code].length > 0);
-            
             if (countries.length === 0) {
               return new Response(`No proxies available for /PUTAR${countryCount || ""}`, { status: 404 });
             }
-
             let selectedCountries;
             if (countryCount === null) {
               selectedCountries = countries;
@@ -310,7 +366,6 @@ export default {
               const shuffled = [...countries].sort(() => Math.random() - 0.5);
               selectedCountries = shuffled.slice(0, Math.min(countryCount, countries.length));
             }
-
             const prxKey = selectedCountries[Math.floor(Math.random() * selectedCountries.length)];
             prxIP = kvPrx[prxKey][Math.floor(Math.random() * kvPrx[prxKey].length)];
           } else {
@@ -319,31 +374,24 @@ export default {
               acc[proxy.country].push(proxy);
               return acc;
             }, {});
-
             const countries = Object.keys(groupedByCountry);
-            
             if (countries.length === 0) {
               return new Response(`No proxies available`, { status: 404 });
             }
-
             let selectedCountries;
-            
             if (countryCount === null) {
               selectedCountries = countries;
             } else {
               const shuffled = [...countries].sort(() => Math.random() - 0.5);
               selectedCountries = shuffled.slice(0, Math.min(countryCount, countries.length));
             }
-
             const selectedProxies = selectedCountries.map(country => {
               const countryProxies = groupedByCountry[country];
               return countryProxies[Math.floor(Math.random() * countryProxies.length)];
             });
-
             const randomProxy = selectedProxies[Math.floor(Math.random() * selectedProxies.length)];
             prxIP = `${randomProxy.prxIP}:${randomProxy.prxPort}`;
           }
-
           console.log(`Selected Proxy (/PUTAR${countryCount || ""}): ${prxIP}`);
           return await websocketHandler(request);
         }
@@ -359,10 +407,8 @@ export default {
             const proxies = await getPrxList(env.PRX_BANK_URL);
 
             if (proxies.length === 0) {
-              // Fallback ke KV proxy list
               const kvPrx = await getKVPrxList();
               let availableProxies = [];
-              
               if (regionKey === "GLOBAL") {
                 availableProxies = Object.values(kvPrx).flat();
               } else {
@@ -372,11 +418,9 @@ export default {
                   }
                 }
               }
-
               if (availableProxies.length === 0) {
                 return new Response(`No proxies available for region: ${regionKey}`, { status: 404 });
               }
-
               if (index === null) {
                 prxIP = availableProxies[Math.floor(Math.random() * availableProxies.length)];
               } else {
@@ -389,13 +433,10 @@ export default {
               const filteredProxies = regionKey === "GLOBAL" 
                 ? proxies
                 : proxies.filter(p => countries.includes(p.country));
-
               if (filteredProxies.length === 0) {
                 return new Response(`No proxies available for region: ${regionKey}`, { status: 404 });
               }
-
               let selectedProxy;
-              
               if (index === null) {
                 selectedProxy = filteredProxies[Math.floor(Math.random() * filteredProxies.length)];
               } else {
@@ -404,16 +445,15 @@ export default {
                 }
                 selectedProxy = filteredProxies[index];
               }
-
               prxIP = `${selectedProxy.prxIP}:${selectedProxy.prxPort}`;
             }
-
             console.log(`Selected Proxy (/${regionKey}${index !== null ? index + 1 : ""}): ${prxIP}`);
             return await websocketHandler(request);
           }
         }
 
         // === Format /CC atau /CCn (Country Code) ===
+        // IMPORTANT: This handles /SG1, /JP5 generated by the sub API
         const countryMatch = path.match(/^\/([A-Z]{2})(\d+)?$/);
         if (countryMatch) {
           const countryCode = countryMatch[1].toUpperCase();
@@ -421,29 +461,35 @@ export default {
           const proxies = await getPrxList(env.PRX_BANK_URL);
           
           if (proxies.length === 0) {
-            // Fallback ke KV proxy list
             const kvPrx = await getKVPrxList();
             if (!kvPrx[countryCode] || kvPrx[countryCode].length === 0) {
               return new Response(`No proxies available for country: ${countryCode}`, { status: 404 });
             }
-
             if (index === null) {
               prxIP = kvPrx[countryCode][Math.floor(Math.random() * kvPrx[countryCode].length)];
             } else {
               if (index < 0 || index >= kvPrx[countryCode].length) {
-                return new Response(`Index ${index + 1} out of range for country ${countryCode}`, { status: 400 });
+                // If index > available, fallback to random or error. 
+                // For sub reliability, let's fallback to modulo to prevent dead link if rotation changes.
+                // But strictly speaking, we return 400 or just wrap around.
+                // Let's stick to strict indexing as requested by previous logic.
+                 if (index >= kvPrx[countryCode].length) {
+                     // Fallback mechanism: use random if index out of bound (optional)
+                     // prxIP = kvPrx[countryCode][Math.floor(Math.random() * kvPrx[countryCode].length)];
+                     return new Response(`Index ${index + 1} out of range for country ${countryCode}`, { status: 400 });
+                 } else {
+                    prxIP = kvPrx[countryCode][index];
+                 }
+              } else {
+                 prxIP = kvPrx[countryCode][index];
               }
-              prxIP = kvPrx[countryCode][index];
             }
           } else {
             const filteredProxies = proxies.filter(proxy => proxy.country === countryCode);
-
             if (filteredProxies.length === 0) {
               return new Response(`No proxies available for country: ${countryCode}`, { status: 404 });
             }
-
             let selectedProxy;
-            
             if (index === null) {
               selectedProxy = filteredProxies[Math.floor(Math.random() * filteredProxies.length)];
             } else {
@@ -452,10 +498,8 @@ export default {
               }
               selectedProxy = filteredProxies[index];
             }
-
             prxIP = `${selectedProxy.prxIP}:${selectedProxy.prxPort}`;
           }
-
           console.log(`Selected Proxy (/${countryCode}${index !== null ? index + 1 : ""}): ${prxIP}`);
           return await websocketHandler(request);
         }
@@ -507,7 +551,9 @@ export default {
   },
 };
 
-// ... (fungsi-fungsi websocketHandler, protocolSniffer, handleTCPOutBound, handleUDPOutbound, makeReadableWebSocketStream, readSsHeader, readFlashHeader, readHorseHeader, remoteSocketToWS, safeCloseWebSocket, base64ToArrayBuffer, arrayBufferToHex TETAP SAMA seperti kode gateway asli)
+// ===========================================
+// WEBSOCKET & PROTOCOL HANDLERS (UNCHANGED)
+// ===========================================
 
 async function websocketHandler(request) {
   const webSocketPair = new WebSocketPair();
@@ -637,12 +683,11 @@ async function protocolSniffer(buffer) {
   }
 
   const flashDelimiter = new Uint8Array(buffer.slice(1, 17));
-  // Hanya mendukung UUID v4
   if (arrayBufferToHex(flashDelimiter).match(/^[0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}$/i)) {
     return atob(flash);
   }
 
-  return "ss"; // default
+  return "ss"; 
 }
 
 async function handleTCPOutBound(
@@ -862,16 +907,16 @@ function readFlashHeader(buffer) {
   let addressValueIndex = addressIndex + 1;
   let addressValue = "";
   switch (addressType) {
-    case 1: // For IPv4
+    case 1: 
       addressLength = 4;
       addressValue = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
       break;
-    case 2: // For Domain
+    case 2: 
       addressLength = new Uint8Array(buffer.slice(addressValueIndex, addressValueIndex + 1))[0];
       addressValueIndex += 1;
       addressValue = new TextDecoder().decode(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
       break;
-    case 3: // For IPv6
+    case 3: 
       addressLength = 16;
       const dataView = new DataView(buffer.slice(addressValueIndex, addressValueIndex + addressLength));
       const ipv6 = [];
@@ -928,16 +973,16 @@ function readHorseHeader(buffer) {
   let addressValueIndex = 2;
   let addressValue = "";
   switch (addressType) {
-    case 1: // For IPv4
+    case 1:
       addressLength = 4;
       addressValue = new Uint8Array(dataBuffer.slice(addressValueIndex, addressValueIndex + addressLength)).join(".");
       break;
-    case 3: // For Domain
+    case 3:
       addressLength = new Uint8Array(dataBuffer.slice(addressValueIndex, addressValueIndex + 1))[0];
       addressValueIndex += 1;
       addressValue = new TextDecoder().decode(dataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
       break;
-    case 4: // For IPv6
+    case 4:
       addressLength = 16;
       const dataView = new DataView(dataBuffer.slice(addressValueIndex, addressValueIndex + addressLength));
       const ipv6 = [];
@@ -1022,7 +1067,6 @@ function safeCloseWebSocket(socket) {
   }
 }
 
-// Helpers
 function base64ToArrayBuffer(base64Str) {
   if (!base64Str) {
     return { error: null };

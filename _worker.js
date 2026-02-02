@@ -3,7 +3,6 @@ import { connect } from "cloudflare:sockets";
 // Variables
 let serviceName = "";
 let APP_DOMAIN = "";
-
 let prxIP = "";
 
 // Constant
@@ -115,7 +114,6 @@ export default {
           if (availableCountries.length === 0) return new Response(`No proxies`, { status: 404 });
           
           const prxKey = availableCountries[Math.floor(Math.random() * availableCountries.length)];
-          // Format KV biasanya "ip:port" string
           const rawAddress = kvPrx[prxKey][Math.floor(Math.random() * kvPrx[prxKey].length)];
           prxIP = rawAddress;
           
@@ -127,7 +125,7 @@ export default {
         if (allMatch) {
           const index = allMatch[1] ? parseInt(allMatch[1], 10) - 1 : null;
           const kvPrx = await getKVPrxList();
-          const all = Object.values(kvPrx).flat(); // Flatten semua array IP
+          const all = Object.values(kvPrx).flat(); 
 
           if (all.length === 0) return new Response("No proxies", { status: 404 });
           
@@ -151,7 +149,6 @@ export default {
 
           let selectedCountries = count === null ? countries : [...countries].sort(() => Math.random() - 0.5).slice(0, Math.min(count, countries.length));
           
-          // Ambil random key (negara) dari selected, lalu random IP
           const randomKey = selectedCountries[Math.floor(Math.random() * selectedCountries.length)];
           prxIP = kvPrx[randomKey][Math.floor(Math.random() * kvPrx[randomKey].length)];
           
@@ -223,14 +220,11 @@ export default {
           const filterFormat = url.searchParams.get("format") || "raw";
           const fillerDomain = url.searchParams.get("domain") || APP_DOMAIN;
 
-          // Fetch Data dari KV
           const kvPrx = await getKVPrxList();
           
-          // Flatten data berdasarkan filter CC
           let filteredList = [];
           Object.keys(kvPrx).forEach(cc => {
             if (filterCC.length === 0 || filterCC.includes(cc)) {
-                // Map array string IP:PORT menjadi object {ip, port, cc}
                 const countryProxies = kvPrx[cc].map(addr => {
                     const [ip, port] = addr.split(":");
                     return { ip, port, cc, org: "KV Node" };
@@ -239,7 +233,6 @@ export default {
             }
           });
 
-          // Shuffle
           shuffleArray(filteredList);
 
           const uuid = crypto.randomUUID();
@@ -253,12 +246,6 @@ export default {
 
             for (const portStr of filterPort) {
               const port = parseInt(portStr);
-              // Cek jika port proxy sama dengan port filter, atau jika KV tidak punya port spesifik
-              // Namun KV format biasanya sudah spesifik IP:PORT. Kita pakai PORT dari KV jika sesuai, atau skip jika beda.
-              // Logic: KV = "IP:PORT". Config = "IP:PORT_FILTER". 
-              // Biasanya config generator memakai IP Proxy sebagai endpoint, tapi portnya mengikuti port service (80/443).
-              // Disini kita ikuti logic awal: prxIP-prxPort adalah PATH. Endpoint adalah fillerDomain:portFilter.
-
               for (const protocol of filterVPN) {
                 if (result.length >= filterLimit) break;
                 uri.protocol = protocol;
@@ -318,3 +305,23 @@ export default {
     }
   },
 };
+
+// ================= HELPER FUNCTIONS =================
+
+function shuffleArray(array) {
+  let currentIndex = array.length;
+  while (currentIndex != 0) {
+    let randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
+    [array[currentIndex], array[randomIndex]] = [array[randomIndex], array[currentIndex]];
+  }
+}
+
+function getFlagEmoji(isoCode) {
+  if (!isoCode) return "🏳️";
+  const codePoints = isoCode
+    .toUpperCase()
+    .split("")
+    .map((char) => 127397 + char.charCodeAt(0));
+  return String.fromCodePoint(...codePoints);
+}
